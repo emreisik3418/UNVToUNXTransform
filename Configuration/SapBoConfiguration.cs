@@ -17,4 +17,11 @@ public class SapBoConfiguration
 
     /// <summary>HttpClient timeout, in seconds, for each individual request.</summary>
     public int RequestTimeoutSeconds { get; set; } = 100;
+
+    /// <summary>
+    /// Page size used when paging through /v1/cmsquery results. SAP BO defaults
+    /// to 50 results per page if not specified, which silently truncates large
+    /// result sets unless the client pages through them explicitly.
+    /// </summary>
+    public int CmsQueryPageSize { get; set; } = 200;
 }

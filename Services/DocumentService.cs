@@ -17,13 +17,15 @@ public class DocumentService : IDocumentService
     private readonly IAuthenticationService _authService;
     private readonly ILogger _logger;
     private readonly SapBoConfiguration _config;
+    private readonly ApplicationConfiguration _appConfig;
 
-    public DocumentService(IHttpClientWrapper httpClient, IAuthenticationService authService, ILogger logger, IOptions<SapBoConfiguration> config)
+    public DocumentService(IHttpClientWrapper httpClient, IAuthenticationService authService, ILogger logger, IOptions<SapBoConfiguration> config, IOptions<ApplicationConfiguration> appConfig)
     {
         _httpClient = httpClient;
         _authService = authService;
         _logger = logger;
         _config = config.Value;
+        _appConfig = appConfig.Value;
     }
 
     private void PrepareHttpClient()
@@ -79,26 +81,55 @@ public class DocumentService : IDocumentService
 
         // Using CMS Query to fetch all WebI documents efficiently
         // SI_INSTANCE = 0 ensures we get the actual document, not history instances
-        var cmsQuery = new CmsQueryRequest
+        // SI_ANCESTOR restricts the scan to a specific CMS folder (and everything under it)
+        // when SourceFolderId is configured.
+        string queryText = "SELECT SI_ID, SI_NAME, SI_CUID FROM CI_INFOOBJECTS WHERE SI_KIND = 'Webi' AND SI_INSTANCE = 0";
+        if (_appConfig.SourceFolderId.HasValue)
         {
-            Query = "SELECT SI_ID, SI_NAME, SI_CUID FROM CI_INFOOBJECTS WHERE SI_KIND = 'Webi' AND SI_INSTANCE = 0"
-        };
+            queryText += $" AND SI_ANCESTOR = {_appConfig.SourceFolderId.Value}";
+            _logger.LogInformation($"Restricting scan to CMS folder SI_ID={_appConfig.SourceFolderId.Value} (and its subfolders).");
+        }
+
+        var cmsQuery = new CmsQueryRequest { Query = queryText };
 
         // Note: The endpoint for CMS query in RESTful WS is typically "/biprws/v1/cmsquery" or "/biprws/raylight/v1/cmsquery"
         // Sometimes it is just "/biprws/cmsquery".
         // Let's assume it is relative to BaseUrl "http://.../biprws/" -> "v1/cmsquery"
-        // If it fails, we might need to adjust the path. 
+        // If it fails, we might need to adjust the path.
         // Common path: /biprws/v1/cmsquery
-        
-        var queryResponse = await ExecuteWithSessionRetryAsync(() => _httpClient.PostAsJsonAsync<CmsQueryResponse>("v1/cmsquery", cmsQuery));
 
-        if (queryResponse?.Entries == null || queryResponse.Entries.Count == 0)
+        // SAP BO's REST API defaults to 50 results per cmsquery call and silently
+        // truncates anything beyond that - page through the results explicitly.
+        int pageSize = _config.CmsQueryPageSize > 0 ? _config.CmsQueryPageSize : 200;
+        var entries = new List<CmsEntry>();
+        int page = 1;
+        while (true)
+        {
+            var pageResponse = await ExecuteWithSessionRetryAsync(() =>
+                _httpClient.PostAsJsonAsync<CmsQueryResponse>($"v1/cmsquery?page={page}&pagesize={pageSize}", cmsQuery));
+
+            var pageEntries = pageResponse?.Entries;
+            if (pageEntries == null || pageEntries.Count == 0)
+            {
+                break;
+            }
+
+            entries.AddRange(pageEntries);
+
+            if (pageEntries.Count < pageSize)
+            {
+                break; // last page
+            }
+
+            page++;
+        }
+
+        if (entries.Count == 0)
         {
             _logger.LogWarning("No documents found using CMS query.");
             return documents;
         }
 
-        var entries = queryResponse.Entries;
         _logger.LogInformation($"Found {entries.Count} documents. Fetching data provider details in batches...");
 
         int batchSize = _config.BatchSize > 0 ? _config.BatchSize : 100;
@@ -234,6 +265,12 @@ public class DocumentService : IDocumentService
 
     public async Task<bool> ChangeDataSourceAsync(int docId, List<string> dataProviderIds, string targetUnxId)
     {
+        if (string.IsNullOrWhiteSpace(targetUnxId))
+        {
+            _logger.LogError($"Target UNX ID is empty for Document {docId}, Data Providers [{string.Join(",", dataProviderIds)}]. Check the Excel mapping file for a missing 'Target UNX ID' value on the matching Source UNV ID row.");
+            return false;
+        }
+
         try
         {
             PrepareHttpClient();
@@ -273,11 +310,22 @@ public class DocumentService : IDocumentService
 
     private async Task<bool> TryApplyMappingAsync(int docId, List<string> dataProviderIds, string targetUnxId)
     {
+        if (string.IsNullOrWhiteSpace(targetUnxId))
+        {
+            _logger.LogError($"Target UNX ID is empty for Document {docId}, Data Providers [{string.Join(",", dataProviderIds)}]. Check the Excel mapping file for a missing 'Target UNX ID' value on the matching Source UNV ID row.");
+            return false;
+        }
+
         // 1. GET Request: Fetch Mapping Plan
         // Endpoint: raylight/v1/documents/{docId}/dataproviders/mappings?originDataProviderIds={ids}&targetDataSourceId={unxId}
 
         string dpIdsStr = string.Join(",", dataProviderIds);
-        string getUrl = $"raylight/v1/documents/{docId}/dataproviders/mappings?originDataProviderIds={dpIdsStr}&targetDataSourceId={targetUnxId}";
+        // SAP CUIDs commonly contain characters such as '+', '/' and '=' that are
+        // not safe to place in a query string unescaped - doing so can truncate or
+        // mangle the value server-side (observed as "targetDatasourceId must not be null").
+        string dpIdsEncoded = string.Join(",", dataProviderIds.Select(Uri.EscapeDataString));
+        string targetUnxIdEncoded = Uri.EscapeDataString(targetUnxId);
+        string getUrl = $"raylight/v1/documents/{docId}/dataproviders/mappings?originDataProviderIds={dpIdsEncoded}&targetDataSourceId={targetUnxIdEncoded}";
 
         _logger.LogInformation($"Fetching mapping plan for Doc {docId}, DPs [{dpIdsStr}] -> Target {targetUnxId}...");
 
