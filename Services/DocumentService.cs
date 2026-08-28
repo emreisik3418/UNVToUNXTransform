@@ -195,7 +195,7 @@ public class DocumentService : IDocumentService
                             }
                             catch (Exception closeEx)
                             {
-                                _logger.LogWarning($"Could not close WebI session for Document {docId} after listing: {closeEx.Message}");
+                                _logger.LogWarning($"[Non-critical] Could not close WebI session for Document {docId} after listing - it will be released automatically by the server's own idle timeout, no action needed. Detail: {closeEx.Message}");
                             }
                         }
                         catch (SapSessionExpiredException)
@@ -419,7 +419,7 @@ public class DocumentService : IDocumentService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning($"Could not close WebI session for Document {docId}: {ex.Message}");
+            _logger.LogWarning($"[Non-critical] Could not close WebI session for Document {docId} - it will be released automatically by the server's own idle timeout, no action needed. Detail: {ex.Message}");
             return false;
         }
     }
@@ -439,9 +439,33 @@ public class DocumentService : IDocumentService
     /// with a genuinely empty body: this closes an "Original" (unmodified)
     /// document, or saves-then-leaves-open a "Modified" one - never deletes it.
     /// </summary>
-    private Task<System.Text.Json.Nodes.JsonNode?> TryCloseDocumentSessionAsync(int docId)
+    private async Task<System.Text.Json.Nodes.JsonNode?> TryCloseDocumentSessionAsync(int docId)
     {
-        var emptyContent = new StringContent(string.Empty, System.Text.Encoding.UTF8, "application/json");
-        return _httpClient.PutCustomContentAsync<System.Text.Json.Nodes.JsonNode>($"raylight/v1/documents/{docId}", emptyContent);
+        const int maxAttempts = 2;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                // A fresh StringContent per attempt - HttpContent should not be resent
+                // if a previous send already started consuming it.
+                var emptyContent = new StringContent(string.Empty, System.Text.Encoding.UTF8, "application/json");
+                return await _httpClient.PutCustomContentAsync<System.Text.Json.Nodes.JsonNode>(
+                    $"raylight/v1/documents/{docId}", emptyContent, isBestEffort: true);
+            }
+            catch (SapSessionExpiredException)
+            {
+                throw; // let ExecuteWithSessionRetryAsync handle re-logon
+            }
+            catch (Exception) when (attempt < maxAttempts)
+            {
+                // Most failures here are a transient connection error from a burst of
+                // near-simultaneous requests all opening new connections at once
+                // (common right at the start of a parallel batch) - a short pause
+                // and a single retry clears almost all of them.
+                await Task.Delay(300);
+            }
+        }
+
+        return null;
     }
 }

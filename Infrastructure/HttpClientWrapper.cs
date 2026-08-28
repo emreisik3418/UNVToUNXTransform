@@ -89,7 +89,7 @@ public class HttpClientWrapper : IHttpClientWrapper
         }
     }
 
-    public async Task<T?> PutCustomContentAsync<T>(string requestUri, HttpContent content)
+    public async Task<T?> PutCustomContentAsync<T>(string requestUri, HttpContent content, bool isBestEffort = false)
     {
         try
         {
@@ -115,9 +115,22 @@ public class HttpClientWrapper : IHttpClientWrapper
             };
             return JsonSerializer.Deserialize<T>(jsonResponse, options);
         }
+        catch (SapSessionExpiredException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            _logger.LogError($"HTTP Put Exception: {ex.Message}", ex);
+            // A best-effort call (e.g. closing a document session) can hit a
+            // transient connection error - most often a burst of near-simultaneous
+            // requests all opening new connections at once - and the caller
+            // already retries and logs a single, clearly-labeled outcome. Logging
+            // it here too as a raw ERROR would just be confusing, alarming noise
+            // for something that isn't actually a problem.
+            if (!isBestEffort)
+            {
+                _logger.LogError($"HTTP Put Exception: {ex.Message}", ex);
+            }
             throw;
         }
     }
