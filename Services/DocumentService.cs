@@ -183,6 +183,20 @@ public class DocumentService : IDocumentService
                                     }
                                 }
                             }
+
+                            // Reading a document's data providers opens a WebI Processing
+                            // Server session for it. Release it immediately - across a full
+                            // repository scan, leaving thousands of these open is what
+                            // exhausts the server's connection limit (SAP error RWI 00239 /
+                            // "The maximum connection limit has been reached").
+                            try
+                            {
+                                await TryCloseDocumentSessionAsync(docId);
+                            }
+                            catch (Exception closeEx)
+                            {
+                                _logger.LogWarning($"Could not close WebI session for Document {docId} after listing: {closeEx.Message}");
+                            }
                         }
                         catch (SapSessionExpiredException)
                         {
@@ -393,5 +407,32 @@ public class DocumentService : IDocumentService
              _logger.LogError($"Failed to save document {docId}: {ex.Message}", ex);
              return false;
         }
+    }
+
+    public async Task<bool> CloseDocumentAsync(int docId)
+    {
+        try
+        {
+            PrepareHttpClient();
+            bool closed = await ExecuteWithSessionRetryAsync(() => TryCloseDocumentSessionAsync(docId));
+            return closed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"Could not close WebI session for Document {docId}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Releases a document's WebI Processing Server session without re-preparing
+    /// the shared HttpClient auth header. Safe to call from within an already
+    /// token-prepared batch (e.g. the parallel scan in
+    /// GetDocumentsWithUnvDataSourcesAsync) without risking a concurrent header
+    /// mutation race on the singleton HttpClient.
+    /// </summary>
+    private Task<bool> TryCloseDocumentSessionAsync(int docId)
+    {
+        return _httpClient.DeleteAsync($"raylight/v1/documents/{docId}");
     }
 }

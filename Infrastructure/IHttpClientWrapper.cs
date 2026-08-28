@@ -6,5 +6,6 @@ public interface IHttpClientWrapper
     Task<T?> PostCustomContentAsync<T>(string requestUri, HttpContent content);
     Task<T?> PutCustomContentAsync<T>(string requestUri, HttpContent content);
     Task<T?> GetFromJsonAsync<T>(string requestUri);
+    Task<bool> DeleteAsync(string requestUri);
     void SetAuthorizationHeader(string token);
 }

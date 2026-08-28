@@ -145,6 +145,29 @@ public class HttpClientWrapper : IHttpClientWrapper
         }
     }
 
+    public async Task<bool> DeleteAsync(string requestUri)
+    {
+        try
+        {
+            var response = await _httpClient.DeleteAsync(requestUri);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError($"API Delete Error: {response.StatusCode} - {errorContent}");
+                ThrowIfSessionExpired(response, errorContent);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"HTTP Delete Exception: {ex.Message}", ex);
+            throw;
+        }
+    }
+
     public void SetAuthorizationHeader(string token)
     {
         if (_httpClient.DefaultRequestHeaders.Contains("X-SAP-LogonToken"))

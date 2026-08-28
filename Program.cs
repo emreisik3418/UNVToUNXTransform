@@ -114,10 +114,12 @@ class Program
                         {
                             string backupName = $"{docName}_Backup_{DateTime.Now:yyyyMMdd_HHmmss}";
                             var backupId = await docService.CopyDocumentAsync(docId, backupName);
-                            
+
                             if (backupId.HasValue)
                             {
                                 backedUpDocumentIds.Add(docId);
+                                // Release the backup copy's WebI session immediately - it isn't touched again.
+                                await docService.CloseDocumentAsync(backupId.Value);
                             }
                             else
                             {
@@ -162,6 +164,11 @@ class Program
                                 logger.LogError($"  - FAILURE: Could not update Document {docId} for target {targetUnxId}.");
                             }
                         }
+
+                        // Release the original document's WebI session now that all its target
+                        // groups have been processed, to avoid exhausting the server's connection
+                        // limit (SAP error RWI 00239) across a run with many documents.
+                        await docService.CloseDocumentAsync(docId);
                     }
                 }
 

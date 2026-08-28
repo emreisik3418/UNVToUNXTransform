@@ -84,3 +84,12 @@ This means the `Target UNX ID` value sent to SAP for the `targetDataSourceId` pa
 
 1. **Missing mapping**: the matched Excel row had an empty `Target UNX ID` cell. The tool now checks for this explicitly and logs `Target UNX ID is empty for Document ... Check the Excel mapping file...` instead of sending a broken request - fix the Excel row for that Source UNV ID.
 2. **Unescaped special characters**: SAP CUIDs (the long IDs used for `Target UNX ID`) commonly contain `+`, `/`, and `=` characters, which are not safe inside a raw URL query string - they can be silently dropped or misinterpreted by the server's query parser. The tool now URL-encodes both `originDataProviderIds` and `targetDataSourceId` before building the request. If you were hitting this error with a Target UNX ID that *did* have a value in Excel, this was almost certainly the cause.
+
+### WSR 00999 / RWI 00239 - "The maximum connection limit has been reached"
+
+Every call to `raylight/v1/documents/{id}/...` (listing data providers, fetching/applying a mapping plan, saving, copying) opens a Web Intelligence Processing Server session for that document. That session stays open - consuming one of the server's limited connection slots - until it's explicitly released with `DELETE raylight/v1/documents/{id}`. The tool previously never sent that DELETE, so a full repository scan (or a run over many documents) would accumulate open sessions until the server refused new ones with this error.
+
+The tool now closes each document's session as soon as it's done with it: right after reading its data providers during the scan, right after a backup copy is created, and right after a document's data source updates are saved. If you still see this error:
+- Check the WebI Processing Server's `Maximum Connections` setting in the CMC (Servers > your WIPS) - it may be set low for your document volume.
+- Lower `MaxParallelism` in `appsettings.json` so fewer documents are open at once during the scan.
+- Sessions from a *previous* run that crashed before this fix may still be lingering on the server; they'll clear on their own after the WIPS idle timeout, or can be recycled by restarting the WebI Processing Server in the CMC.
