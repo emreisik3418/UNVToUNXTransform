@@ -414,8 +414,8 @@ public class DocumentService : IDocumentService
         try
         {
             PrepareHttpClient();
-            bool closed = await ExecuteWithSessionRetryAsync(() => TryCloseDocumentSessionAsync(docId));
-            return closed;
+            var result = await ExecuteWithSessionRetryAsync(() => TryCloseDocumentSessionAsync(docId));
+            return result != null;
         }
         catch (Exception ex)
         {
@@ -425,14 +425,23 @@ public class DocumentService : IDocumentService
     }
 
     /// <summary>
-    /// Releases a document's WebI Processing Server session without re-preparing
-    /// the shared HttpClient auth header. Safe to call from within an already
+    /// Releases a document's WebI Processing Server session ("Life Cycle
+    /// Management" in the WebI RESTful SDK) without re-preparing the shared
+    /// HttpClient auth header. Safe to call from within an already
     /// token-prepared batch (e.g. the parallel scan in
     /// GetDocumentsWithUnvDataSourcesAsync) without risking a concurrent header
     /// mutation race on the singleton HttpClient.
+    ///
+    /// IMPORTANT: /documents/{documentId} does NOT support DELETE - that is only
+    /// documented for schedules and, if sent here, can be routed to the generic
+    /// InfoStore handler and actually delete the CMS document. Per the SDK, the
+    /// correct way to close a document (and free its Raylight session) is a PUT
+    /// with a genuinely empty body: this closes an "Original" (unmodified)
+    /// document, or saves-then-leaves-open a "Modified" one - never deletes it.
     /// </summary>
-    private Task<bool> TryCloseDocumentSessionAsync(int docId)
+    private Task<System.Text.Json.Nodes.JsonNode?> TryCloseDocumentSessionAsync(int docId)
     {
-        return _httpClient.DeleteAsync($"raylight/v1/documents/{docId}");
+        var emptyContent = new StringContent(string.Empty, System.Text.Encoding.UTF8, "application/json");
+        return _httpClient.PutCustomContentAsync<System.Text.Json.Nodes.JsonNode>($"raylight/v1/documents/{docId}", emptyContent);
     }
 }
