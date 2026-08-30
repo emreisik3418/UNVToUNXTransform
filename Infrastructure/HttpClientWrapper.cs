@@ -1,4 +1,6 @@
+using System.IO;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text.Json;
 
 namespace UNVToUNXTransform.Infrastructure;
@@ -22,11 +24,48 @@ public class HttpClientWrapper : IHttpClientWrapper
         }
     }
 
+    /// <summary>
+    /// A dropped/stale pooled TCP connection (e.g. silently killed by a
+    /// firewall, load balancer, or SAP Web Dispatcher after being idle or
+    /// long-lived) surfaces here as a timeout or aborted I/O, not as an HTTP
+    /// status code, so it can't be told apart from a genuinely slow or dead
+    /// server by inspecting a response. One quiet retry on a fresh connection
+    /// resolves it without giving up on the whole document/data provider.
+    /// </summary>
+    private static bool IsTransientTransportError(Exception ex)
+    {
+        return ex is IOException
+            || ex is SocketException
+            || ex is TaskCanceledException
+            || (ex is HttpRequestException hre && hre.InnerException is IOException or SocketException);
+    }
+
+    private async Task<System.Net.Http.HttpResponseMessage> SendWithTransientRetryAsync(Func<Task<System.Net.Http.HttpResponseMessage>> send, string requestDescription)
+    {
+        const int maxAttempts = 2;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return await send();
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsTransientTransportError(ex))
+            {
+                _logger.LogWarning($"Transient connection error on {requestDescription}: {ex.Message}. Retrying once on a fresh connection...");
+                await Task.Delay(TimeSpan.FromSeconds(2));
+            }
+        }
+
+        // Unreachable: the final attempt above either returns or lets its
+        // exception propagate (the `when` guard is false once attempt == maxAttempts).
+        throw new InvalidOperationException("Unreachable.");
+    }
+
     public async Task<T?> PostAsJsonAsync<T>(string requestUri, object content)
     {
         try
         {
-            var response = await _httpClient.PostAsJsonAsync(requestUri, content);
+            var response = await SendWithTransientRetryAsync(() => _httpClient.PostAsJsonAsync(requestUri, content), requestUri);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -60,7 +99,7 @@ public class HttpClientWrapper : IHttpClientWrapper
     {
         try
         {
-            var response = await _httpClient.PostAsync(requestUri, content);
+            var response = await SendWithTransientRetryAsync(() => _httpClient.PostAsync(requestUri, content), requestUri);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -93,7 +132,7 @@ public class HttpClientWrapper : IHttpClientWrapper
     {
         try
         {
-            var response = await _httpClient.PutAsync(requestUri, content);
+            var response = await SendWithTransientRetryAsync(() => _httpClient.PutAsync(requestUri, content), requestUri);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -139,7 +178,7 @@ public class HttpClientWrapper : IHttpClientWrapper
     {
         try
         {
-            var response = await _httpClient.GetAsync(requestUri);
+            var response = await SendWithTransientRetryAsync(() => _httpClient.GetAsync(requestUri), requestUri);
 
             if (!response.IsSuccessStatusCode)
             {

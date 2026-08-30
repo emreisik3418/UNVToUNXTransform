@@ -220,10 +220,22 @@ class Program
             client.DefaultRequestHeaders.Accept.Clear();
             client.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
         })
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
         {
             UseCookies = false,
-            UseDefaultCredentials = false
+            // No Credentials set (SocketsHttpHandler's equivalent of
+            // HttpClientHandler.UseDefaultCredentials = false) - logon is
+            // handled explicitly via the X-SAP-LogonToken header.
+            // On a long run (hours), an intermediate device (firewall, load
+            // balancer, SAP Web Dispatcher) can silently drop an idle/aged TCP
+            // connection without the client noticing. Without a bound here the
+            // pool holds onto such a connection forever and every request
+            // routed onto it hangs until HttpClient.Timeout - which is exactly
+            // what "everything times out after ~1.5 hours" looks like. Forcing
+            // periodic recycling means a dead connection is replaced long
+            // before it gets a chance to strand a request.
+            PooledConnectionLifetime = TimeSpan.FromMinutes(4),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
         });
 
         // Services
