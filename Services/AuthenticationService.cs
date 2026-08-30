@@ -24,6 +24,14 @@ public class AuthenticationService : IAuthenticationService
     {
         _logger.LogInformation("Attempting to log on to SAP BO...");
 
+        // A stale X-SAP-LogonToken header from a previous (now-expired) session
+        // must not be sent with the logon request itself - SAP BO's REST API
+        // rejects logon attempts that already carry a session token, with
+        // "Logon may not proceed because a session is already associated with
+        // this request", which otherwise looks identical to a plain logon
+        // failure and leaves every subsequent request stuck retrying forever.
+        _httpClient.ClearAuthorizationHeader();
+
         var requestUri = "logon/long";
         var authRequest = new AuthenticationRequest
         {

@@ -165,8 +165,16 @@ public class HttpClientWrapper : IHttpClientWrapper
             _httpClient.DefaultRequestHeaders.Remove("X-SAP-LogonToken");
         }
         _httpClient.DefaultRequestHeaders.Add("X-SAP-LogonToken", token);
-        
+
         // Also simpler "Authorization" just in case, but SAP BO typically uses X-SAP-LogonToken
         // _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+    }
+
+    public void ClearAuthorizationHeader()
+    {
+        if (_httpClient.DefaultRequestHeaders.Contains("X-SAP-LogonToken"))
+        {
+            _httpClient.DefaultRequestHeaders.Remove("X-SAP-LogonToken");
+        }
     }
 }
