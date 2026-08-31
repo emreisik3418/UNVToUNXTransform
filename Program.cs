@@ -67,7 +67,11 @@ class Program
                     logger.LogInformation($"Loaded {loadedMappings.Count} mappings from Excel.");
 
                     // Step 3: List Documents & Match with Mappings
-                    var documentCandidtes = await docService.GetDocumentsWithUnvDataSourcesAsync();
+                    // Documents whose data providers match a loaded source UNV ID keep
+                    // their WebI session open across the scan (see GetDocumentsWithUnvDataSourcesAsync)
+                    // since Phase 1/2 below reuses the same document ID to convert them.
+                    var targetSourceUnvIds = loadedMappings.Select(m => m.SourceUnvId).ToHashSet();
+                    var documentCandidtes = await docService.GetDocumentsWithUnvDataSourcesAsync(targetSourceUnvIds);
                     
                     int matchCount = 0;
                     if (documentCandidtes.Count > 0)

@@ -65,7 +65,7 @@ public class DocumentService : IDocumentService
         }
     }
 
-    public async Task<List<DataSourceMapping>> GetDocumentsWithUnvDataSourcesAsync()
+    public async Task<List<DataSourceMapping>> GetDocumentsWithUnvDataSourcesAsync(ISet<string> targetSourceUnvIds)
     {
         try 
         {
@@ -165,6 +165,7 @@ public class DocumentService : IDocumentService
 
                             var dpResponse = await _httpClient.GetFromJsonAsync<DataProviderListResponse>($"raylight/v1/documents/{docId}/dataproviders");
 
+                            bool willBeConverted = false;
                             if (dpResponse?.DataProviders?.DataProviderList != null)
                             {
                                 lock (documents)
@@ -182,20 +183,31 @@ public class DocumentService : IDocumentService
                                         });
                                     }
                                 }
+
+                                willBeConverted = dpResponse.DataProviders.DataProviderList
+                                    .Any(dp => dp.DataSourceId != null && targetSourceUnvIds.Contains(dp.DataSourceId));
                             }
 
                             // Reading a document's data providers opens a WebI Processing
-                            // Server session for it. Release it immediately - across a full
-                            // repository scan, leaving thousands of these open is what
-                            // exhausts the server's connection limit (SAP error RWI 00239 /
-                            // "The maximum connection limit has been reached").
-                            try
+                            // Server session for it. Release it immediately UNLESS this
+                            // document matches a loaded mapping and will be reopened for
+                            // conversion later in Program.cs - closing it here would leave
+                            // that later raylight/v1/documents/{docId} call with an ID whose
+                            // session no longer exists (SAP WSR 00400 "does not exist").
+                            // Across a full repository scan, leaving thousands of *unmatched*
+                            // sessions open is what exhausts the server's connection limit
+                            // (SAP error RWI 00239 / "The maximum connection limit has been
+                            // reached"), so still close those.
+                            if (!willBeConverted)
                             {
-                                await TryCloseDocumentSessionAsync(docId);
-                            }
-                            catch (Exception closeEx)
-                            {
-                                _logger.LogWarning($"[Non-critical] Could not close WebI session for Document {docId} after listing - it will be released automatically by the server's own idle timeout, no action needed. Detail: {closeEx.Message}");
+                                try
+                                {
+                                    await TryCloseDocumentSessionAsync(docId);
+                                }
+                                catch (Exception closeEx)
+                                {
+                                    _logger.LogWarning($"[Non-critical] Could not close WebI session for Document {docId} after listing - it will be released automatically by the server's own idle timeout, no action needed. Detail: {closeEx.Message}");
+                                }
                             }
                         }
                         catch (SapSessionExpiredException)
