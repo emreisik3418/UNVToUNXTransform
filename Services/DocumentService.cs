@@ -157,9 +157,12 @@ public class DocumentService : IDocumentService
         string dpIdsStr = string.Join(",", dataProviderIds);
         // CUIDs can contain '+', '/' and '=' which must be escaped in a query string
         // (otherwise observed as "targetDatasourceId must not be null").
+        // Parameter name as this server expects it: "targetDatasourceId" (lowercase
+        // "s"); "targetDataSourceId" is ignored and fails with WSR 00100
+        // "Argument targetDatasourceId must not be null".
         string dpIdsEncoded = string.Join(",", dataProviderIds.Select(Uri.EscapeDataString));
         string targetUnxIdEncoded = Uri.EscapeDataString(targetUnxId);
-        string getUrl = $"raylight/v1/documents/{docId}/dataproviders/mappings?originDataProviderIds={dpIdsEncoded}&targetDataSourceId={targetUnxIdEncoded}";
+        string getUrl = $"raylight/v1/documents/{docId}/dataproviders/mappings?originDataProviderIds={dpIdsEncoded}&targetDatasourceId={targetUnxIdEncoded}";
 
         _logger.LogInformation($"Fetching mapping plan for Doc {docId}, DPs [{dpIdsStr}] -> Target {targetUnxId}...");
 
@@ -216,32 +219,28 @@ public class DocumentService : IDocumentService
         }
     }
 
-    public async Task<bool> RevertDocumentAsync(int docId)
+    public async Task<bool> CloseDocumentAsync(int docId, bool documentHasUnsavedChanges = false)
     {
         try
         {
-            _logger.LogWarning($"Discarding unsaved changes on Document {docId}...");
-            // Raylight document state "Original": back to the last saved version.
-            bool ok = await ExecuteWithSessionRetryAsync(() => _httpClient.PutForStatusAsync(
-                $"raylight/v1/documents/{docId}", "{\"document\": {\"state\": \"Original\"}}"));
-            if (!ok)
+            // state "Unused" is the documented way to release a document; any
+            // unsaved changes (e.g. a partly failed conversion) are discarded.
+            bool ok = await ExecuteWithSessionRetryAsync(() => TryPutWithRetryAsync(docId, "{\"document\": {\"state\": \"Unused\"}}"));
+            if (ok)
             {
-                _logger.LogError($"Could not discard changes on Document {docId} (see API error above). Check this document manually - closing it may persist a partial conversion.");
+                return true;
             }
-            return ok;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError($"Could not discard changes on Document {docId}: {ex.Message}. Check this document manually - closing it may persist a partial conversion.");
-            return false;
-        }
-    }
 
-    public async Task<bool> CloseDocumentAsync(int docId)
-    {
-        try
-        {
-            bool ok = await ExecuteWithSessionRetryAsync(() => TryCloseDocumentSessionAsync(docId));
+            if (documentHasUnsavedChanges)
+            {
+                // The empty-body fallback below SAVES a modified document, so it
+                // must not be used when a partial conversion is pending.
+                _logger.LogError($"Could not close Document {docId} without saving (see API error above). Its unsaved changes stay in memory until the server's Idle Document Timeout and are NOT saved, but check this document manually.");
+                return false;
+            }
+
+            // Fallback: PUT with an empty body also releases an unmodified document.
+            ok = await ExecuteWithSessionRetryAsync(() => TryPutWithRetryAsync(docId, string.Empty));
             if (!ok)
             {
                 _logger.LogWarning($"Server did not accept closing Document {docId} (see API error above).");
@@ -256,19 +255,18 @@ public class DocumentService : IDocumentService
     }
 
     /// <summary>
-    /// Releases a document's WebI Processing Server session with a PUT and an
-    /// empty body. NOTE: /documents/{id} must NOT be called with DELETE - that
-    /// can be routed to the generic InfoStore handler and delete the document.
+    /// PUT on /documents/{id} with one quick retry for transient connection
+    /// errors. NOTE: /documents/{id} must NOT be called with DELETE - that can be
+    /// routed to the generic InfoStore handler and delete the document.
     /// </summary>
-    private async Task<bool> TryCloseDocumentSessionAsync(int docId)
+    private async Task<bool> TryPutWithRetryAsync(int docId, string body)
     {
         const int maxAttempts = 2;
         for (int attempt = 1; ; attempt++)
         {
             try
             {
-                return await _httpClient.PutForStatusAsync(
-                    $"raylight/v1/documents/{docId}", string.Empty, isBestEffort: true);
+                return await _httpClient.PutForStatusAsync($"raylight/v1/documents/{docId}", body, isBestEffort: true);
             }
             catch (SapSessionExpiredException)
             {

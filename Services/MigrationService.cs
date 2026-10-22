@@ -137,6 +137,7 @@ public class MigrationService : IMigrationService
     {
         int docId = entry.GetId();
         var result = new DocumentResult { DocumentId = docId, DocumentName = entry.SiName ?? string.Empty };
+        bool hasUnsavedChanges = false;
 
         try
         {
@@ -180,9 +181,9 @@ public class MigrationService : IMigrationService
 
             if (failedDpIds.Count > 0)
             {
-                // Do not persist a half-converted document: discard the changes so
-                // the report stays on its original UNVs and can be fixed and re-run.
-                await _docService.RevertDocumentAsync(docId);
+                // Do not persist a half-converted document: the changes are discarded
+                // when it is closed (state "Unused"), so the report stays on its original UNVs and can be fixed and re-run.
+                hasUnsavedChanges = true; // discarded when the document is closed below
                 var failedNames = matched.Where(dp => failedDpIds.Contains(dp.Id)).Select(dp => dp.Name);
                 result.Status = DocumentStatus.Failed;
                 result.Details = $"Not converted: {string.Join(", ", failedNames)}. Document left unchanged.";
@@ -198,7 +199,7 @@ public class MigrationService : IMigrationService
             }
             else
             {
-                await _docService.RevertDocumentAsync(docId);
+                hasUnsavedChanges = true;
                 result.Status = DocumentStatus.Failed;
                 result.Details = "Conversion succeeded but saving failed. Document left unchanged.";
                 _logger.LogError($"FAILURE: Document {docId} ({result.DocumentName}) - {result.Details}");
@@ -216,7 +217,7 @@ public class MigrationService : IMigrationService
         finally
         {
             // Always release the document, whatever happened above.
-            if (!await _docService.CloseDocumentAsync(docId))
+            if (!await _docService.CloseDocumentAsync(docId, hasUnsavedChanges))
             {
                 Interlocked.Increment(ref _closeFailures);
             }

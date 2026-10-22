@@ -27,15 +27,11 @@ public interface IDocumentService
     Task<bool> SaveDocumentAsync(int docId);
 
     /// <summary>
-    /// Discards unsaved changes on an open document (state "Original"), so a
-    /// partly failed conversion is not persisted when the document is closed.
-    /// </summary>
-    Task<bool> RevertDocumentAsync(int docId);
-
-    /// <summary>
     /// Releases the document's WebI Processing Server session. Must be called
     /// for every document that was opened, otherwise sessions accumulate on the
-    /// server (memory growth, SAP error RWI 00239).
+    /// server (memory growth, SAP error RWI 00239). Unsaved changes are
+    /// discarded. Set <paramref name="documentHasUnsavedChanges"/> when a
+    /// conversion failed part-way, so no fallback that would save is used.
     /// </summary>
-    Task<bool> CloseDocumentAsync(int docId);
+    Task<bool> CloseDocumentAsync(int docId, bool documentHasUnsavedChanges = false);
 }

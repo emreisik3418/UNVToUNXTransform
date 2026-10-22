@@ -9,7 +9,7 @@ The tool performs the following steps:
 2.  **Authenticates** with the SAP BO 4.3 RESTful API.
 3.  **Lists** the Web Intelligence documents (optionally only under `SourceFolderId`).
 4.  **Processes each document on its own**: open -> read data providers -> if a data provider uses a mapped UNV, apply the mapping plan -> save -> close.
-    If any data provider of a document cannot be converted, the document's changes are discarded (state `Original`) so no half-converted report is saved.
+    If any data provider of a document cannot be converted, the document is closed without saving (state `Unused`) so no half-converted report is saved. Documents are always closed with state `Unused`.
 5.  **Writes a report** (`MigrationReport_<timestamp>.csv` in `OutputDirectory`) listing converted, failed and unreadable documents.
 
 Documents are processed in batches of `BatchSize`, `MaxParallelism` at a time, and the session is refreshed between batches. At no point are more than `MaxParallelism` documents open on the WebI Processing Server.
