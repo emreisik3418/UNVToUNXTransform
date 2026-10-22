@@ -10,8 +10,8 @@ public class AuthenticationService : IAuthenticationService
     private readonly IHttpClientWrapper _httpClient;
     private readonly SapBoConfiguration _config;
     private readonly ILogger _logger;
-    private string? _logonToken;
-    private readonly SemaphoreSlim _relogonLock = new SemaphoreSlim(1, 1);
+    private volatile string? _logonToken;
+    private readonly SemaphoreSlim _sessionLock = new SemaphoreSlim(1, 1);
 
     public AuthenticationService(IHttpClientWrapper httpClient, IOptions<SapBoConfiguration> config, ILogger logger)
     {
@@ -20,19 +20,17 @@ public class AuthenticationService : IAuthenticationService
         _logger = logger;
     }
 
+    public string? CurrentToken => _logonToken;
+
     public async Task<bool> LogonAsync()
     {
         _logger.LogInformation("Attempting to log on to SAP BO...");
 
-        // A stale X-SAP-LogonToken header from a previous (now-expired) session
-        // must not be sent with the logon request itself - SAP BO's REST API
-        // rejects logon attempts that already carry a session token, with
-        // "Logon may not proceed because a session is already associated with
-        // this request", which otherwise looks identical to a plain logon
-        // failure and leaves every subsequent request stuck retrying forever.
+        // A stale X-SAP-LogonToken must not be sent with the logon request itself -
+        // SAP BO rejects it with "Logon may not proceed because a session is
+        // already associated with this request".
         _httpClient.ClearAuthorizationHeader();
 
-        var requestUri = "logon/long";
         var authRequest = new AuthenticationRequest
         {
             UserName = _config.UserName,
@@ -42,18 +40,16 @@ public class AuthenticationService : IAuthenticationService
 
         try
         {
-            var response = await _httpClient.PostAsJsonAsync<AuthenticationResponse>(requestUri, authRequest);
+            var response = await _httpClient.PostAsJsonAsync<AuthenticationResponse>("logon/long", authRequest);
 
             if (response != null && !string.IsNullOrEmpty(response.LogonToken))
             {
                 _logonToken = response.LogonToken;
-                // Important: Set the token in the HTTP client wrapper for future requests
                 _httpClient.SetAuthorizationHeader(_logonToken);
-                
                 _logger.LogSuccess("Logon successful.");
                 return true;
             }
-            
+
             _logger.LogError("Logon failed: No token received.");
             return false;
         }
@@ -66,44 +62,64 @@ public class AuthenticationService : IAuthenticationService
 
     public async Task LogoffAsync()
     {
-        if (string.IsNullOrEmpty(_logonToken)) return;
+        var token = _logonToken;
+        if (string.IsNullOrEmpty(token)) return;
 
         _logger.LogInformation("Logging off from SAP BO...");
         try
         {
-            // Ensure token is set (though it should be for the session)
-            _httpClient.SetAuthorizationHeader(_logonToken);
-            
-            // Endpoint is usually just "logoff"
+            _httpClient.SetAuthorizationHeader(token);
             await _httpClient.PostAsJsonAsync<object>("logoff", new { });
-            
-            _logonToken = null;
             _logger.LogSuccess("Logoff successful.");
         }
         catch (Exception ex)
         {
-            // Logoff failure shouldn't stop flow usually, but good to note
-            _logger.LogWarning($"Logoff failed (session might verify timeout later): {ex.Message}");
+            // An already expired session cannot be logged off - that is fine.
+            _logger.LogWarning($"Logoff failed (the server will release the session on its own timeout): {ex.Message}");
+        }
+        finally
+        {
+            _logonToken = null;
+            _httpClient.ClearAuthorizationHeader();
         }
     }
 
-    public async Task<bool> ReLogonAsync()
+    public async Task<bool> ReLogonAsync(string? failedToken = null)
     {
-        await _relogonLock.WaitAsync();
+        await _sessionLock.WaitAsync();
         try
         {
+            // Another worker already replaced the rejected token while we waited
+            // (or the failed request was sent while a re-logon was in progress):
+            // just use the new token instead of opening yet another session.
+            var current = _logonToken;
+            if (current != null && current != failedToken)
+            {
+                return true;
+            }
+
             _logger.LogWarning("SAP BO session appears to have expired. Re-authenticating...");
-            _logonToken = null;
+            await LogoffAsync();
             return await LogonAsync();
         }
         finally
         {
-            _relogonLock.Release();
+            _sessionLock.Release();
         }
     }
 
-    public string GetToken()
+    public async Task<bool> RefreshSessionAsync()
     {
-        return _logonToken ?? throw new InvalidOperationException("Not logged on.");
+        await _sessionLock.WaitAsync();
+        try
+        {
+            _logger.LogInformation("Refreshing SAP BO session...");
+            await LogoffAsync();
+            return await LogonAsync();
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
     }
 }
