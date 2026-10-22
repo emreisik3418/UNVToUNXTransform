@@ -9,14 +9,27 @@ public class SapBoConfiguration
     public string Password { get; set; }
     public string AuthType { get; set; } = "secEnterprise";
 
-    /// <summary>Max concurrent HTTP requests when fetching data providers for the document list.</summary>
-    public int MaxParallelism { get; set; } = 10;
+    /// <summary>
+    /// How many documents are processed at the same time. Each one holds an open
+    /// WebI document on the server while it is being converted, so keep this low
+    /// (2-3) on a small server.
+    /// </summary>
+    public int MaxParallelism { get; set; } = 2;
 
-    /// <summary>Documents processed per progress-reporting batch while listing data providers.</summary>
-    public int BatchSize { get; set; } = 100;
+    /// <summary>Documents per batch. Between batches the session is refreshed (see RefreshSessionAfterEachBatch).</summary>
+    public int BatchSize { get; set; } = 50;
 
-    /// <summary>HttpClient timeout, in seconds, for each individual request.</summary>
-    public int RequestTimeoutSeconds { get; set; } = 100;
+    /// <summary>
+    /// When true, the tool logs off and on again after each batch, while no
+    /// request is in flight, so nothing can accumulate in one long session.
+    /// </summary>
+    public bool RefreshSessionAfterEachBatch { get; set; } = true;
+
+    /// <summary>
+    /// HttpClient timeout, in seconds, for each individual request. Applying a
+    /// mapping plan on a large report can take minutes.
+    /// </summary>
+    public int RequestTimeoutSeconds { get; set; } = 300;
 
     /// <summary>
     /// Page size used when paging through /v1/cmsquery results. SAP BO defaults

@@ -5,11 +5,16 @@ This console application assists in migrating SAP BusinessObjects data sources f
 ## Overview
 
 The tool performs the following steps:
-1.  **Authenticates** with SAP BO 4.3 RESTful API.
-2.  **Reads** a provided Excel mapping file (`DataSourceMapping.xlsx`) to get the "Source UNV ID" to "Target UNX ID" relations.
-3.  **Lists** all Web Intelligence documents from the server.
-4.  **Matches** the documents' data sources against the loaded mappings.
-5.  **Reports** which documents will be updated based on the matching IDs.
+1.  **Reads** the Excel mapping file (`DataSourceMapping.xlsx`) with "Source UNV ID" -> "Target UNX ID" pairs.
+2.  **Authenticates** with the SAP BO 4.3 RESTful API.
+3.  **Lists** the Web Intelligence documents (optionally only under `SourceFolderId`).
+4.  **Processes each document on its own**: open -> read data providers -> if a data provider uses a mapped UNV, apply the mapping plan -> save -> close.
+    If any data provider of a document cannot be converted, the document's changes are discarded (state `Original`) so no half-converted report is saved.
+5.  **Writes a report** (`MigrationReport_<timestamp>.csv` in `OutputDirectory`) listing converted, failed and unreadable documents.
+
+Documents are processed in batches of `BatchSize`, `MaxParallelism` at a time, and the session is refreshed between batches. At no point are more than `MaxParallelism` documents open on the WebI Processing Server.
+
+Re-running the tool is safe: documents that were already converted no longer use a mapped UNV and are skipped.
 
 ## Prerequisites
 - .NET 8.0 SDK or later
@@ -26,18 +31,20 @@ The tool performs the following steps:
      "UserName": "Administrator",
      "Password": "Password123",
      "AuthType": "secEnterprise",
-     "MaxParallelism": 10,
-     "BatchSize": 100,
-     "RequestTimeoutSeconds": 100,
+     "MaxParallelism": 2,
+     "BatchSize": 50,
+     "RefreshSessionAfterEachBatch": true,
+     "RequestTimeoutSeconds": 300,
      "CmsQueryPageSize": 200
    }
    ```
-   - `MaxParallelism`: how many `dataproviders` lookups run concurrently while scanning documents. Lower it if the CMS/APS servers are struggling under load; raise it (e.g. 20-25) if the server has headroom and scanning feels slow.
-   - `BatchSize`: how many documents are grouped together per progress-reporting pass.
-   - `RequestTimeoutSeconds`: per-request HTTP timeout. Raise this if large documents or a slow server cause request timeouts.
-   - `CmsQueryPageSize`: page size used when listing documents via `/v1/cmsquery`. SAP BO defaults to **50 results per call** and silently truncates anything beyond that if the client doesn't page through results - the tool now pages automatically using this size until a short page is returned.
+   - `MaxParallelism`: how many documents are processed at the same time. Each one is an open WebI document on the server while it is converted - keep it at 2-3 on a small server.
+   - `BatchSize`: documents per batch.
+   - `RefreshSessionAfterEachBatch`: log off and on again after each batch (when nothing is in flight).
+   - `RequestTimeoutSeconds`: per-request HTTP timeout. Applying a mapping plan on a large report can take minutes. Timed-out POSTs are not resent, so the server is not asked to do the same heavy work twice.
+   - `CmsQueryPageSize`: page size used when listing documents via `/v1/cmsquery` (SAP BO otherwise returns only 50 results per call).
 
-   The session token is now refreshed **reactively**: the tool only re-logs on when the server actually responds with HTTP 401/403 (expired/invalid token), instead of unconditionally logging off and back on every batch. This removes a significant, unnecessary source of latency on large document sets.
+   Only HTTP 401 is treated as an expired session (re-logon, logging off the old session first). HTTP 403 is a permission error on a single object and is reported as a failure for that document.
 
    Optionally, restrict the scan to one CMS folder (and everything under it) via the `Application` section:
    ```json
@@ -47,6 +54,8 @@ The tool performs the following steps:
      "SourceFolderId": 12345
    }
    ```
+   Set `"DryRun": true` in the `Application` section to only analyse the documents and get the report of what would be converted, without changing anything.
+
    `SourceFolderId` is the folder's `SI_ID` (find it in the CMC, or via the folder's URL/properties). It's translated into an `SI_ANCESTOR = <id>` condition in the CMS query, which matches documents anywhere under that folder, not just direct children. Leave it `null` to scan the whole repository.
 
 2. **Prepare Mapping File**:

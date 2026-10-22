@@ -7,6 +7,11 @@ public class ConsoleLogger : ILogger
 {
     private readonly string _logFilePath;
 
+    // Documents are processed in parallel; without a lock concurrent writes to
+    // the log file fail (file in use) and lines are silently lost, and console
+    // colors of different messages get mixed up.
+    private readonly object _sync = new object();
+
     public ConsoleLogger(IOptions<ApplicationConfiguration> config)
     {
         // Define log directory and file
@@ -43,40 +48,52 @@ public class ConsoleLogger : ILogger
 
     public void LogInformation(string message)
     {
-        Console.ForegroundColor = ConsoleColor.White;
-        Console.WriteLine($"[INFO] {DateTime.Now:HH:mm:ss} - {message}");
-        Console.ResetColor();
-        LogToFile("INFO", message);
+        lock (_sync)
+        {
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine($"[INFO] {DateTime.Now:HH:mm:ss} - {message}");
+            Console.ResetColor();
+            LogToFile("INFO", message);
+        }
     }
 
     public void LogWarning(string message)
     {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine($"[WARN] {DateTime.Now:HH:mm:ss} - {message}");
-        Console.ResetColor();
-        LogToFile("WARN", message);
+        lock (_sync)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"[WARN] {DateTime.Now:HH:mm:ss} - {message}");
+            Console.ResetColor();
+            LogToFile("WARN", message);
+        }
     }
 
     public void LogError(string message, Exception? ex = null)
     {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"[ERROR] {DateTime.Now:HH:mm:ss} - {message}");
-        if (ex != null)
+        lock (_sync)
         {
-            Console.WriteLine(ex.ToString());
-        }
-        Console.ResetColor();
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"[ERROR] {DateTime.Now:HH:mm:ss} - {message}");
+            if (ex != null)
+            {
+                Console.WriteLine(ex.ToString());
+            }
+            Console.ResetColor();
 
-        var text = message;
-        if (ex != null) text += Environment.NewLine + ex.ToString();
-        LogToFile("ERROR", text);
+            var text = message;
+            if (ex != null) text += Environment.NewLine + ex.ToString();
+            LogToFile("ERROR", text);
+        }
     }
 
     public void LogSuccess(string message)
     {
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"[SUCCESS] {DateTime.Now:HH:mm:ss} - {message}");
-        Console.ResetColor();
-        LogToFile("SUCCESS", message);
+        lock (_sync)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"[SUCCESS] {DateTime.Now:HH:mm:ss} - {message}");
+            Console.ResetColor();
+            LogToFile("SUCCESS", message);
+        }
     }
 }

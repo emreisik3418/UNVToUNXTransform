@@ -13,4 +13,10 @@ public class ApplicationConfiguration
     /// to scan the entire repository.
     /// </summary>
     public int? SourceFolderId { get; set; }
+
+    /// <summary>
+    /// When true, documents are only analysed and the matches are reported;
+    /// nothing is converted or saved. Use it to check the mapping file first.
+    /// </summary>
+    public bool DryRun { get; set; }
 }
